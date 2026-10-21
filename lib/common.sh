@@ -12,10 +12,12 @@ GH_MIRRORS=(
     "https://ghproxy.net/"
 )
 
-# 探测本机能否直连 api.github.com（4 秒超时）
-# 能直连 → 返回 1（优先直连）；不能 → 返回 0（优先走加速）
+# 探测本机能否直连 GitHub 下载链路（4 秒超时）
+# api.github.com 通不代表能下 release 资产，两个域名都通才算直连可用
 gh_can_direct() {
-    curl -fsS -m 4 -o /dev/null https://api.github.com/ 2>/dev/null
+    curl -fsS -m 4 -o /dev/null https://api.github.com/ 2>/dev/null || return 1
+    curl -fsS -m 4 -o /dev/null https://raw.githubusercontent.com/xymhh/oneclick-scripts/main/README.md 2>/dev/null || return 1
+    return 0
 }
 
 # 按「能否直连」排出本次使用的镜像顺序，写入全局 MIRROR_ORDER
@@ -36,15 +38,27 @@ gh_build_mirror_order() {
 }
 
 # 下载：对每个镜像尝试一次，成功即返回 0
-# 用法：gh_fetch <原始 https://github.com/... 地址> <输出文件> [超时秒]
+# 关键点（踩过的坑）：
+#   1. 必须有进度条（--progress-bar），否则静默 curl 看起来就是「卡死」；
+#   2. 必须加 --speed-limit/--speed-time，低到 1KB/s 持续 15 秒就换源，
+#      不要靠 --max-time 干等几分钟；
+#   3. 每次尝试打印「→ 尝试 X / ✗ 失败 Ns」，失败也要有回显。
+# 用法：gh_fetch <原始 https://github.com/... 地址> <输出文件> [单源超时秒]
 gh_fetch() {
-    local url="$1" out="$2" timeout="${3:-60}" prefix
+    local url="$1" out="$2" timeout="${3:-90}" prefix label t0 cost
     for prefix in "${MIRROR_ORDER[@]}"; do
+        if [[ -n "${prefix}" ]]; then label="加速源 ${prefix}"; else label="直连 GitHub"; fi
+        echo "  → 尝试${label}"
         rm -f "$out"
-        if curl -fL --connect-timeout 8 --max-time "$timeout" -o "$out" "${prefix}${url}" 2>/dev/null \
-            && [[ -s "$out" ]]; then
+        t0=$(date +%s)
+        if curl -fL --progress-bar --connect-timeout 5 --speed-limit 1024 --speed-time 15 \
+                --max-time "${timeout}" -o "$out" "${prefix}${url}" 2>&1; then
+            cost=$(( $(date +%s) - t0 ))
+            echo "  ✓ ${label}成功（${cost}s）"
             return 0
         fi
+        cost=$(( $(date +%s) - t0 ))
+        echo "  ✗ ${label}失败（${cost}s），换下一个"
     done
     rm -f "$out"
     return 1

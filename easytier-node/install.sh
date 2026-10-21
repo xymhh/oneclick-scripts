@@ -37,7 +37,11 @@ OPT_VERSION=""; OPT_MIRROR="auto"; OPT_YES=0
 MIRROR_ORDER=()
 
 gh_can_direct() {
-    curl -fsS -m 4 -o /dev/null https://api.github.com/ 2>/dev/null
+    # api.github.com 通 ≠ 下载通：国内常见「api 能过，raw / release 资产域名被墙」，
+    # 所以两个域名都要通才算直连可用，否则默认走加速源，避免先卡在直连上干等。
+    curl -fsS -m 4 -o /dev/null https://api.github.com/ 2>/dev/null || return 1
+    curl -fsS -m 4 -o /dev/null https://raw.githubusercontent.com/xymhh/oneclick-scripts/main/README.md 2>/dev/null || return 1
+    return 0
 }
 
 build_mirror_order() {
@@ -55,14 +59,21 @@ build_mirror_order() {
 }
 
 gh_fetch() {
-    local url="$1" out="$2" timeout="${3:-120}" prefix
+    local url="$1" out="$2" timeout="${3:-90}" prefix label t0 cost
     for prefix in "${MIRROR_ORDER[@]}"; do
+        if [[ -n "${prefix}" ]]; then label="加速源 ${prefix}"; else label="直连 GitHub"; fi
+        echo -e "  ${BLUE}→ 尝试${label}${PLAIN}"
         rm -f "$out"
-        if curl -fL --connect-timeout 8 --max-time "${timeout}" -o "$out" "${prefix}${url}" 2>/dev/null \
-            && [[ -s "$out" ]]; then
-            [[ -n "$prefix" ]] && echo -e "  ${BLUE}已通过加速源下载：${prefix}${PLAIN}"
+        t0=$(date +%s)
+        # --speed-limit/--speed-time：15 秒内低于 1KB/s 就判定卡死并换源，不用干等 --max-time
+        if curl -fL --progress-bar --connect-timeout 5 --speed-limit 1024 --speed-time 15 \
+                --max-time "${timeout}" -o "$out" "${prefix}${url}" 2>&1 ; then
+            cost=$(( $(date +%s) - t0 ))
+            echo -e "  ${GREEN}✓ ${label}成功（${cost}s，$(du -h "$out" | cut -f1)）${PLAIN}"
             return 0
         fi
+        cost=$(( $(date +%s) - t0 ))
+        echo -e "  ${YELLOW}✗ ${label}失败（${cost}s），换下一个${PLAIN}"
     done
     rm -f "$out"
     return 1
@@ -206,8 +217,9 @@ install_or_update_core() {
     rm -rf "$tmp_dir" && mkdir -p "$tmp_dir"
 
     echo -e "${YELLOW}正在下载核心文件...${PLAIN}"
-    if ! gh_fetch "https://github.com/${ET_REPO}/releases/download/${tag}/${zip_name}" "${tmp_dir}/${zip_name}" 180; then
-        echo -e "${RED}下载失败：所有加速源均不可用，请检查网络或用 --mirror proxy 重试。${PLAIN}"
+    if ! gh_fetch "https://github.com/${ET_REPO}/releases/download/${tag}/${zip_name}" "${tmp_dir}/${zip_name}" 90; then
+        echo -e "${RED}下载失败：所有源都没成。可重试：bash install.sh --mirror proxy --mode 3 --yes${PLAIN}"
+        echo -e "${YELLOW}或手动下载后放到本机，用 --version ${tag} 跳过联网取版本号。${PLAIN}"
         return 1
     fi
 
