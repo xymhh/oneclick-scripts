@@ -1,0 +1,8 @@
+# 会话级便签
+/*_TODO.md
+
+# 运行时 / 本地文件
+*.log
+*.tmp
+.DS_Store
+__pycache__/
